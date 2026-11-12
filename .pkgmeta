@@ -1,0 +1,7 @@
+package-as: MyCrafting
+
+ignore:
+  - .github
+  - .gitignore
+  - README.md
+  - MyCrafting_Logo.jpg
