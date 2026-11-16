@@ -31,13 +31,14 @@ local VENDOR_REAGENTS = {
     [9210]  = { name = "Ghost Dye", cost = 1500 },
 
     -- Flux, Coal & Stones (Blacksmithing / Engineering)
-    [2880]  = { name = "Weak Flux", cost = 20 },
-    [3466]  = { name = "Strong Flux", cost = 200 },
-    [3857]  = { name = "Coal", cost = 5 },
-    [4361]  = { name = "Heavy Stock", cost = 200 },
-    [4362]  = { name = "Wooden Stock", cost = 20 },
+    [2880]  = { name = "Weak Flux", cost = 100 },
+    [3466]  = { name = "Strong Flux", cost = 2000 },
+    [3857]  = { name = "Coal", cost = 500 },
+    [4361]  = { name = "Heavy Stock", cost = 2000 },
+    [4362]  = { name = "Wooden Stock", cost = 200 },
     [2901]  = { name = "Mining Pick", cost = 82 },
-    [5956]  = { name = "Blacksmith Hammer", cost = 14 },
+    [5956]  = { name = "Blacksmith Hammer", cost = 18 },
+    [10648] = { name = "Blank Parchment", cost = 500 },
 
     -- Leatherworking
     [4289]  = { name = "Salt", cost = 12 },
@@ -71,12 +72,51 @@ for id, data in pairs(VENDOR_REAGENTS) do
     VENDOR_NAMES[data.name:lower()] = { id = id, cost = data.cost }
 end
 
+function V.ScanMerchantPrices()
+    if not V.IsMerchantOpen() or not _G.MyCraftingDB then return 0 end
+    _G.MyCraftingDB.vendorPrices = _G.MyCraftingDB.vendorPrices or {}
+    local vdb = _G.MyCraftingDB.vendorPrices
+    local numItems = _G.GetMerchantNumItems()
+    local updated = 0
+
+    for i = 1, numItems do
+        local name, _, price, quantity, numAvailable, isPurchasable, _, extendedCost = _G.GetMerchantItemInfo(i)
+        local link = _G.GetMerchantItemLink(i)
+        local itemID = link and C.GetItemIDFromLink(link)
+        -- Cache unlimited-stock gold/silver/copper vendor items (ignore limited-stock/token items)
+        if itemID and price and price > 0 and not extendedCost and numAvailable == -1 then
+            local unitPrice = math.floor(price / math.max(1, quantity or 1))
+            if unitPrice > 0 then
+                vdb[itemID] = {
+                    name = name,
+                    cost = unitPrice,
+                }
+                updated = updated + 1
+            end
+        end
+    end
+
+    return updated
+end
+
 function V.IsVendorReagent(itemID, name)
+    local cached = _G.MyCraftingDB and _G.MyCraftingDB.vendorPrices
+    if cached and itemID and cached[itemID] and cached[itemID].cost then
+        return true, cached[itemID].cost
+    end
     if itemID and VENDOR_REAGENTS[itemID] then
         return true, VENDOR_REAGENTS[itemID].cost
     end
     if name then
-        local entry = VENDOR_NAMES[name:lower()]
+        local lower = name:lower()
+        if cached then
+            for _, entry in pairs(cached) do
+                if entry.name and entry.name:lower() == lower and entry.cost then
+                    return true, entry.cost
+                end
+            end
+        end
+        local entry = VENDOR_NAMES[lower]
         if entry then
             return true, entry.cost
         end

@@ -10,6 +10,7 @@
 Compat.lua
 VendorDB.lua
 GatheringDB.lua
+AuctionDB.lua
 Queue.lua
 UI.lua
 Options.lua

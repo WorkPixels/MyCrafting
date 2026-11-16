@@ -3,6 +3,7 @@ local ADDON_NAME, NS = ...
 
 local C = NS.Compat
 local V = NS.VendorDB
+local A = NS.AuctionDB
 local Q = NS.Queue
 local UI = NS.UI
 
@@ -11,6 +12,8 @@ local DEFAULT_DB = {
     favorites = {},
     queue = {},
     bankInventory = {},
+    ahPrices = {},
+    knownReagents = {},
     options = {
         sidePanelOpen = true,
         autoBuyVendor = false,
@@ -19,6 +22,8 @@ local DEFAULT_DB = {
         showReagentTooltips = true,
         showBankCounts = true,
         playQueueSound = true,
+        showCraftProfit = true,
+        autoScanAH = true,
     },
 }
 
@@ -100,6 +105,13 @@ local EVENTS_TO_REGISTER = {
     "BAG_UPDATE_DELAYED",
     "BAG_UPDATE",
     "TRADE_SKILL_DETAILS_UPDATE",
+    "AUCTION_HOUSE_SHOW",
+    "AUCTION_HOUSE_CLOSED",
+    "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED",
+    "AUCTION_HOUSE_BROWSE_RESULTS_ADDED",
+    "COMMODITY_SEARCH_RESULTS_UPDATED",
+    "ITEM_SEARCH_RESULTS_UPDATED",
+    "AUCTION_ITEM_LIST_UPDATE",
 }
 
 for _, evt in ipairs(EVENTS_TO_REGISTER) do
@@ -172,6 +184,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "TRADE_SKILL_SHOW" or event == "TRADE_SKILL_DATA_SOURCE_CHANGED" or event == "CRAFT_SHOW" then
         CheckAndHookAllFrames()
+        if A and A.CacheProfessionReagents then
+            A.CacheProfessionReagents()
+        end
         local parent = _G.ProfessionsFrame or _G.TradeSkillFrame or _G.CraftFrame
         if parent and parent:IsShown() then
             UI.AttachToDefaultFrame(parent)
@@ -206,10 +221,49 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         ScanBankInventory()
 
     elseif event == "MERCHANT_SHOW" then
+        if V and V.ScanMerchantPrices then
+            V.ScanMerchantPrices()
+        end
         CheckMerchantAutoBuy()
+        local parent = _G.ProfessionsFrame or _G.TradeSkillFrame or _G.CraftFrame
+        if parent and parent:IsShown() then
+            UI.CreateOrUpdateSkillBar(parent)
+        end
 
     elseif event == "BAG_UPDATE_DELAYED" then
         UI.Refresh()
+
+    elseif event == "AUCTION_HOUSE_SHOW" then
+        if A then
+            A.InjectScanButton()
+            if _G.C_Timer and _G.C_Timer.After then
+                _G.C_Timer.After(0.1, function()
+                    A.InjectScanButton()
+                end)
+                if _G.MyCraftingDB and _G.MyCraftingDB.options and _G.MyCraftingDB.options.autoScanAH ~= false then
+                    _G.C_Timer.After(0.5, function()
+                        A.ScanReagents(false)
+                    end)
+                end
+            end
+        end
+
+    elseif event == "AUCTION_HOUSE_CLOSED" then
+        if A then A.StopScan() end
+
+    elseif event == "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED" or event == "AUCTION_HOUSE_BROWSE_RESULTS_ADDED" then
+        if A then A.OnBrowseUpdated() end
+
+    elseif event == "COMMODITY_SEARCH_RESULTS_UPDATED" then
+        local itemID = ...
+        if A then A.CaptureCommodityResults(itemID) end
+
+    elseif event == "ITEM_SEARCH_RESULTS_UPDATED" then
+        local itemKey = ...
+        if A then A.CaptureItemResults(itemKey) end
+
+    elseif event == "AUCTION_ITEM_LIST_UPDATE" then
+        if A then A.CaptureLegacyList() end
     end
 end)
 
@@ -227,6 +281,7 @@ local function PrintHelp()
     DEFAULT_CHAT_FRAME:AddMessage("  |cffffd100/mc shop|r - Print shopping list to chat")
     DEFAULT_CHAT_FRAME:AddMessage("  |cffffd100/mc clear|r - Clear crafting queue")
     DEFAULT_CHAT_FRAME:AddMessage("  |cffffd100/mc autobuy [on|off]|r - Toggle auto-buy vendor reagents at merchants")
+    DEFAULT_CHAT_FRAME:AddMessage("  |cffffd100/mc ahscan|r - Scan AH prices for known crafting reagents")
     DEFAULT_CHAT_FRAME:AddMessage("  |cffffd100/mc reset|r - Reset window and side panel positions")
 end
 
@@ -249,6 +304,10 @@ _G.SlashCmdList["MYCRAFTING"] = function(msg)
         end
     elseif cmd == "shop" then
         Q.ShareToChat("SELF")
+    elseif cmd == "ahscan" or cmd == "scan" then
+        if A and A.ScanReagents then
+            A.ScanReagents(true)
+        end
     elseif cmd == "clear" then
         Q.Clear()
         DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99MyCrafting:|r Crafting queue cleared.")

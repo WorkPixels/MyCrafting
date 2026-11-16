@@ -94,14 +94,192 @@ function UI.PositionSidePanel(parent)
 end
 
 -- ---------------------------------------------------------------------------
+-- Craft Cost & Vendor Profit Display
+-- ---------------------------------------------------------------------------
+local profitBox = nil
+
+local function FindSlotLabel(slot)
+    if slot.Label then return slot.Label end
+    if slot.Text then return slot.Text end
+    if slot.Name then return slot.Name end
+    if slot.GetRegions then
+        for _, region in ipairs({ slot:GetRegions() }) do
+            if region and region.GetObjectType and region:GetObjectType() == "FontString" then
+                return region
+            end
+        end
+    end
+    return nil
+end
+
+function UI.UpdateReagentSlotPrices(parent, recipe)
+    local A = NS.AuctionDB
+    if not A or not parent then return end
+    local show = not (_G.MyCraftingDB and _G.MyCraftingDB.options and _G.MyCraftingDB.options.showCraftProfit == false)
+
+    local cp = parent.CraftingPage
+    local sf = cp and (cp.SchematicForm or cp.Schematic)
+    if not sf or not sf.reagentSlotPool or not sf.reagentSlotPool.EnumerateActive then return end
+
+    for slot in sf.reagentSlotPool:EnumerateActive() do
+        if not slot.MyCraftingPriceText then
+            local fs = slot:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            local label = FindSlotLabel(slot)
+            if label then
+                fs:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -1)
+            elseif slot.Button then
+                fs:SetPoint("BOTTOMLEFT", slot.Button, "BOTTOMRIGHT", 6, 2)
+            else
+                fs:SetPoint("BOTTOMLEFT", slot, "BOTTOMLEFT", 42, 2)
+            end
+            fs:SetJustifyH("LEFT")
+            slot.MyCraftingPriceText = fs
+        end
+
+        if not show then
+            slot.MyCraftingPriceText:Hide()
+        else
+            local slotSchematic = (slot.GetReagentSlotSchematic and slot:GetReagentSlotSchematic()) or slot.reagentSlotSchematic
+            local reagent = slotSchematic and slotSchematic.reagents and slotSchematic.reagents[1]
+            local rID = reagent and reagent.itemID
+            if rID then
+                local rName = C.GetItemInfo(rID) or ""
+                local unitCost, source = A.GetReagentCost(rID, rName)
+                if unitCost and unitCost > 0 then
+                    local tag = (source == "Vendor") and "|cffffd100Vendor:|r " or "|cff66ccffAH:|r "
+                    slot.MyCraftingPriceText:SetText(tag .. C.FormatMoney(unitCost))
+                else
+                    slot.MyCraftingPriceText:SetText("|cff808080AH: ?|r")
+                end
+                slot.MyCraftingPriceText:Show()
+            else
+                slot.MyCraftingPriceText:Hide()
+            end
+        end
+    end
+end
+
+function UI.CreateOrUpdateProfitDisplay(parent, recipe)
+    if _G.MyCraftingDB and _G.MyCraftingDB.options and _G.MyCraftingDB.options.showCraftProfit == false then
+        if profitBox then profitBox:Hide() end
+        return
+    end
+    local A = NS.AuctionDB
+    if not A or not recipe then
+        if profitBox then profitBox:Hide() end
+        return
+    end
+
+    local cp = parent.CraftingPage
+    local schematicFrame = cp and (cp.SchematicForm or cp.Schematic)
+    if not profitBox then
+        profitBox = CreateFrame("Frame", "MyCraftingProfitBox", schematicFrame or parent)
+        profitBox:SetSize(280, 28)
+        profitBox:EnableMouse(true)
+
+        local costLine = profitBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        costLine:SetPoint("TOPLEFT", profitBox, "TOPLEFT", 0, 0)
+        costLine:SetJustifyH("LEFT")
+        profitBox.costLine = costLine
+
+        local profitLine = profitBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        profitLine:SetPoint("TOPLEFT", costLine, "BOTTOMLEFT", 0, -2)
+        profitLine:SetJustifyH("LEFT")
+        profitBox.profitLine = profitLine
+
+        profitBox:SetScript("OnEnter", function(self)
+            local data = self.profitData
+            local rec = self.recipeData
+            if not data or not rec then return end
+            GameTooltip:SetOwner(self, "ANCHOR_TOPLEFT")
+            GameTooltip:SetText((rec.name or "Recipe") .. " — Cost & Profit", 1, 1, 1)
+            for _, item in ipairs(data.breakdown or {}) do
+                if item.lineCost then
+                    GameTooltip:AddDoubleLine(
+                        string.format("%dx %s", item.need, item.name),
+                        string.format("%s |cff888888(%s)|r", C.FormatMoney(item.lineCost), item.source or "?"),
+                        0.9, 0.9, 0.9, 1, 1, 1
+                    )
+                else
+                    GameTooltip:AddDoubleLine(
+                        string.format("%dx %s", item.need, item.name),
+                        "|cff808080Not scanned (visit AH)|r",
+                        0.9, 0.9, 0.9, 0.6, 0.6, 0.6
+                    )
+                end
+            end
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddDoubleLine("Total Craft Cost:", C.FormatMoney(data.totalCost), 1, 0.82, 0, 1, 1, 1)
+            if data.vendorValue then
+                GameTooltip:AddDoubleLine(string.format("Vendor Sell (%dx):", data.numMade), C.FormatMoney(data.vendorValue), 0.8, 0.8, 0.8, 1, 1, 1)
+                local pColor = data.vendorProfit >= 0 and "|cff00ff00+" or "|cffff5050-"
+                GameTooltip:AddDoubleLine("Vendor Profit:", pColor .. C.FormatMoney(math.abs(data.vendorProfit)) .. "|r", 1, 0.82, 0, 1, 1, 1)
+            end
+            if data.ahValue then
+                GameTooltip:AddDoubleLine(string.format("AH Value (%s):", data.ahSource or "AH"), C.FormatMoney(data.ahValue), 0.4, 0.8, 1, 1, 1, 1)
+                local aColor = data.ahProfit >= 0 and "|cff00ff00+" or "|cffff5050-"
+                GameTooltip:AddDoubleLine("AH Profit (pre-cut):", aColor .. C.FormatMoney(math.abs(data.ahProfit)) .. "|r", 0.4, 0.8, 1, 1, 1, 1)
+            end
+            GameTooltip:Show()
+        end)
+        profitBox:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    end
+
+    profitBox:ClearAllPoints()
+    if schematicFrame then
+        profitBox:SetPoint("BOTTOMLEFT", schematicFrame, "BOTTOMLEFT", 16, 62)
+    else
+        profitBox:SetPoint("BOTTOMLEFT", parent, "BOTTOMLEFT", 360, 62)
+    end
+
+    local data = A.CalculateRecipeProfit(recipe)
+    if not data then
+        profitBox:Hide()
+        return
+    end
+
+    profitBox.profitData = data
+    profitBox.recipeData = recipe
+
+    local missingNote = data.missingCount > 0 and string.format(" |cff808080(%d mat ?)|r", data.missingCount) or ""
+    if data.totalCost > 0 or data.missingCount == 0 then
+        profitBox.costLine:SetText(string.format("|cffffd100Craft Cost:|r %s%s", C.FormatMoney(data.totalCost), missingNote))
+    else
+        profitBox.costLine:SetText("|cffffd100Craft Cost:|r |cff808080Visit AH to scan mats|r")
+    end
+
+    if data.vendorValue and data.vendorProfit then
+        local sign = data.vendorProfit >= 0 and "|cff00ff00+" or "|cffff5050-"
+        profitBox.profitLine:SetText(string.format(
+            "|cffffd100Vendor:|r %s  (%s%s|r)",
+            C.FormatMoney(data.vendorValue),
+            sign,
+            C.FormatMoney(math.abs(data.vendorProfit))
+        ))
+    else
+        profitBox.profitLine:SetText("|cffffd100Vendor:|r |cff808080No sell value|r")
+    end
+
+    profitBox:Show()
+    UI.UpdateReagentSlotPrices(parent, recipe)
+    if _G.C_Timer and _G.C_Timer.After then
+        _G.C_Timer.After(0, function()
+            UI.UpdateReagentSlotPrices(parent, recipe)
+        end)
+    end
+end
+
+-- ---------------------------------------------------------------------------
 -- Skillet-Style Recipe Difficulty Progression Bar
 -- ---------------------------------------------------------------------------
 function UI.CreateOrUpdateSkillBar(parent)
+    local recipe = C.GetSelectedRecipe()
+    UI.CreateOrUpdateProfitDisplay(parent, recipe)
+
     if _G.MyCraftingDB and _G.MyCraftingDB.options and _G.MyCraftingDB.options.showSkillBar == false then
         if skillBar then skillBar:Hide() end
         return
     end
-    local recipe = C.GetSelectedRecipe()
     if not recipe then
         if skillBar then skillBar:Hide() end
         return
@@ -701,6 +879,13 @@ function UI.HookTooltips()
                         self:AddLine(string.format("|cffffd100Sold by vendors (%s each)|r", C.FormatMoney(vCost)), 1, 0.8, 0)
                     end
 
+                    if NS.AuctionDB and NS.AuctionDB.GetPrice then
+                        local ahPrice, ahSource = NS.AuctionDB.GetPrice(rID)
+                        if ahPrice and ahPrice > 0 then
+                            self:AddLine(string.format("|cff66ccff%s:|r %s each", ahSource or "AH", C.FormatMoney(ahPrice)), 0.4, 0.8, 1)
+                        end
+                    end
+
                     local sub = known[rName:lower()]
                     if sub then
                         self:AddLine("|cff33ff99Sub-recipe available in profession|r", 0.2, 1.0, 0.5)
@@ -797,6 +982,12 @@ function UI.Refresh()
                         GameTooltip:AddLine(string.format("In Bags: %d  |  In Bank: %d", sItem.have, sItem.bank), 0.7, 0.7, 0.7)
                         if sItem.isVendor then
                             GameTooltip:AddLine(string.format("|cffffd100Sold by vendors (%s total)|r", C.FormatMoney(sItem.vendorCost)), 1, 0.8, 0)
+                        end
+                        if NS.AuctionDB and NS.AuctionDB.GetPrice and sItem.id then
+                            local ahPrice, ahSource = NS.AuctionDB.GetPrice(sItem.id)
+                            if ahPrice and ahPrice > 0 then
+                                GameTooltip:AddLine(string.format("|cff66ccff%s:|r %s each", ahSource or "AH", C.FormatMoney(ahPrice)), 0.4, 0.8, 1)
+                            end
                         end
                         GameTooltip:Show()
                     end

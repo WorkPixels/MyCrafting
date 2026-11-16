@@ -40,6 +40,16 @@ local OPTION_DEFS = {
         label = "Play sound when queue finishes",
         tip = "Play a completion sound when all queued crafts are done.",
     },
+    {
+        key = "showCraftProfit",
+        label = "Show craft cost & vendor profit",
+        tip = "Display estimated reagent cost and NPC vendor profit on selected recipes.",
+    },
+    {
+        key = "autoScanAH",
+        label = "Auto-scan reagent prices at AH",
+        tip = "Automatically refresh cached AH prices for your crafting reagents when opening the Auction House.",
+    },
 }
 
 local function ApplyBackdrop(frame)
@@ -71,7 +81,7 @@ function Opt.CreateFrame()
     if configFrame then return configFrame end
 
     configFrame = CreateFrame("Frame", "MyCraftingOptionsFrame", UIParent, "BackdropTemplate")
-    configFrame:SetSize(350, 310)
+    configFrame:SetSize(350, 370)
     configFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     configFrame:SetFrameStrata("DIALOG")
     configFrame:SetMovable(true)
@@ -116,7 +126,7 @@ function Opt.CreateFrame()
             end
 
             -- Apply live UI updates
-            if def.key == "showSkillBar" then
+            if def.key == "showSkillBar" or def.key == "showCraftProfit" then
                 local parent = _G.ProfessionsFrame or _G.TradeSkillFrame or _G.CraftFrame
                 if parent and parent:IsShown() then
                     UI.CreateOrUpdateSkillBar(parent)
