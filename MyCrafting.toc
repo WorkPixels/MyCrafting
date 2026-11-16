@@ -2,7 +2,7 @@
 ## Title: MyCrafting
 ## Notes: Enhanced crafting interface for WoW Forever with features inspired by MyProfs and Skillet — expanded recipe list, instant search & filters, crafting queue, shopping list, vendor auto-buy, and sub-recipe navigation.
 ## Author: KD & Sword
-## Version: 1.0.0
+## Version: 1.1.0
 ## SavedVariables: MyCraftingDB
 ## IconTexture: Interface\Icons\Trade_Engraving
 ## X-Category: Professions
