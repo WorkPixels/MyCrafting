@@ -8,6 +8,7 @@ local C = NS.Compat
 local V = NS.VendorDB
 
 local scanActive = false
+local bgScanPending = false
 local scanTimeoutTimer = nil
 local scanRetryTimer = nil
 local scanQueue = {}
@@ -181,15 +182,32 @@ end
 -- ---------------------------------------------------------------------------
 -- Known Reagent Tracking (populated whenever a profession window is opened)
 -- ---------------------------------------------------------------------------
+local function GetCharKey()
+    local name = _G.UnitName and _G.UnitName("player") or "Unknown"
+    local realm = _G.GetRealmName and _G.GetRealmName() or "Realm"
+    return name .. "-" .. realm
+end
+
 function A.CacheProfessionReagents()
     if not _G.MyCraftingDB then return end
     _G.MyCraftingDB.knownReagents = _G.MyCraftingDB.knownReagents or {}
+    _G.MyCraftingDB.knownRecipes = _G.MyCraftingDB.knownRecipes or {}
+    _G.MyCraftingDB.charRecipes = _G.MyCraftingDB.charRecipes or {}
+
+    local charKey = GetCharKey()
+    _G.MyCraftingDB.charRecipes[charKey] = _G.MyCraftingDB.charRecipes[charKey] or {}
+
     local reagentsDB = _G.MyCraftingDB.knownReagents
+    local recipesDB = _G.MyCraftingDB.knownRecipes
+    local charDB = _G.MyCraftingDB.charRecipes[charKey]
+    local profName = C.GetProfessionInfo()
 
     local recipes = C.GetAllRecipes()
     for _, recipe in ipairs(recipes) do
+        local compactReagents = {}
         for _, r in ipairs(recipe.reagents or {}) do
             local rID = r.itemID or r.id or C.GetItemIDFromLink(r.link)
+            local rCount = r.count or r.need or 1
             if rID and r.name and r.name ~= "" and not r.name:match("^Item %d+$") then
                 -- Skip NPC-only vendor items so AH scans focus on AH materials
                 local isVendor = V.IsVendorReagent(rID, r.name)
@@ -197,8 +215,97 @@ function A.CacheProfessionReagents()
                     reagentsDB[rID] = r.name
                 end
             end
+            table.insert(compactReagents, {
+                itemID = rID,
+                name = r.name,
+                count = rCount,
+                link = r.link,
+            })
+        end
+
+        if recipe.id and #compactReagents > 0 then
+            local outputItemID = recipe.outputItemID or recipe.itemID or C.GetItemIDFromLink(recipe.itemLink)
+            recipesDB[recipe.id] = {
+                id = recipe.id,
+                name = recipe.name,
+                icon = recipe.icon,
+                prof = profName,
+                outputItemID = outputItemID,
+                itemLink = recipe.itemLink,
+                numMade = recipe.numMade,
+                reagents = compactReagents,
+            }
+            charDB[recipe.id] = true
         end
     end
+end
+
+function A.GetProfitableVendorCrafts(filterProfName)
+    local results = {}
+    local recipesDB = (_G.MyCraftingDB and _G.MyCraftingDB.knownRecipes) or {}
+    local charKey = GetCharKey()
+    local charDB = _G.MyCraftingDB and _G.MyCraftingDB.charRecipes and _G.MyCraftingDB.charRecipes[charKey]
+    local filterLower = filterProfName and filterProfName ~= "" and filterProfName:lower() or nil
+
+    for recipeID, recipe in pairs(recipesDB) do
+        local belongsToChar = (not charDB) or (charDB[recipeID] == true)
+        local matchesProf = (not filterLower) or (recipe.prof and recipe.prof:lower() == filterLower)
+        if belongsToChar and matchesProf then
+            local profit = A.CalculateRecipeProfit(recipe)
+            if profit and profit.missingCount == 0 and profit.vendorProfit and profit.vendorProfit > 0 then
+                table.insert(results, {
+                    recipe = recipe,
+                    profit = profit,
+                })
+            end
+        end
+    end
+
+    table.sort(results, function(a, b)
+        return (a.profit.vendorProfit or 0) > (b.profit.vendorProfit or 0)
+    end)
+
+    return results
+end
+
+function A.SearchAHForItem(itemID, itemName)
+    if not ((_G.AuctionHouseFrame and _G.AuctionHouseFrame:IsShown()) or (_G.AuctionFrame and _G.AuctionFrame:IsShown())) then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99MyCrafting:|r Open the Auction House to search for " .. (itemName or "this item") .. ".")
+        return false
+    end
+
+    local queryName = itemName
+    if (not queryName or queryName == "") and itemID then
+        queryName = C.GetItemInfo(itemID)
+    end
+    if not queryName or queryName == "" then return false end
+
+    if _G.AuctionHouseFrame and _G.AuctionHouseFrame:IsShown() then
+        if _G.AuctionHouseFrame.SetDisplayMode and _G.AuctionHouseFrameDisplayMode and _G.AuctionHouseFrameDisplayMode.Buy then
+            pcall(_G.AuctionHouseFrame.SetDisplayMode, _G.AuctionHouseFrame, _G.AuctionHouseFrameDisplayMode.Buy)
+        end
+        if _G.AuctionHouseFrame.SearchBar and _G.AuctionHouseFrame.SearchBar.SearchBox then
+            pcall(_G.AuctionHouseFrame.SearchBar.SearchBox.SetText, _G.AuctionHouseFrame.SearchBar.SearchBox, queryName)
+        end
+        if _G.C_AuctionHouse and _G.C_AuctionHouse.SendBrowseQuery then
+            pcall(_G.C_AuctionHouse.SendBrowseQuery, {
+                searchString = queryName,
+                minLevel = 0,
+                maxLevel = 0,
+                sorts = {},
+                filters = {},
+            })
+            DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99MyCrafting:|r Searching AH for |cffffd100" .. queryName .. "|r...")
+            return true
+        end
+    elseif _G.AuctionFrame and _G.AuctionFrame:IsShown() and _G.QueryAuctionItems then
+        if _G.BrowseName then _G.BrowseName:SetText(queryName) end
+        pcall(_G.QueryAuctionItems, queryName, nil, nil, 0, nil, nil, false, false, nil)
+        DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99MyCrafting:|r Searching AH for |cffffd100" .. queryName .. "|r...")
+        return true
+    end
+
+    return false
 end
 
 -- ---------------------------------------------------------------------------
@@ -316,15 +423,7 @@ function A.StopScan()
     end
 end
 
-function A.OnBrowseUpdated()
-    local count = A.CaptureBrowseResults()
-    if count > 0 and NS.UI and NS.UI.CreateOrUpdateSkillBar then
-        local parent = _G.ProfessionsFrame or _G.TradeSkillFrame or _G.CraftFrame
-        if parent and parent:IsShown() then
-            NS.UI.CreateOrUpdateSkillBar(parent)
-        end
-    end
-
+local function AdvanceScan()
     if scanActive and stepScanFn then
         if scanTimeoutTimer then
             scanTimeoutTimer:Cancel()
@@ -335,9 +434,50 @@ function A.OnBrowseUpdated()
             scanRetryTimer = nil
         end
         if _G.C_Timer and _G.C_Timer.NewTimer then
-            scanRetryTimer = _G.C_Timer.NewTimer(0.25, stepScanFn)
+            scanRetryTimer = _G.C_Timer.NewTimer(1.0, stepScanFn)
         end
     end
+end
+
+function A.OnThrottledReady()
+    if scanActive and stepScanFn and not scanRetryTimer then
+        if _G.C_Timer and _G.C_Timer.NewTimer then
+            scanRetryTimer = _G.C_Timer.NewTimer(0.15, stepScanFn)
+        end
+    end
+end
+
+function A.OnBrowseUpdated()
+    local count = A.CaptureBrowseResults()
+    if count > 0 and NS.UI and NS.UI.CreateOrUpdateSkillBar then
+        local parent = _G.ProfessionsFrame or _G.TradeSkillFrame or _G.CraftFrame
+        if parent and parent:IsShown() then
+            NS.UI.CreateOrUpdateSkillBar(parent)
+        end
+    end
+    AdvanceScan()
+end
+
+function A.OnCommodityUpdated(itemID)
+    A.CaptureCommodityResults(itemID)
+    if NS.UI and NS.UI.CreateOrUpdateSkillBar then
+        local parent = _G.ProfessionsFrame or _G.TradeSkillFrame or _G.CraftFrame
+        if parent and parent:IsShown() then
+            NS.UI.CreateOrUpdateSkillBar(parent)
+        end
+    end
+    AdvanceScan()
+end
+
+function A.OnItemSearchUpdated(itemKey)
+    A.CaptureItemResults(itemKey)
+    if NS.UI and NS.UI.CreateOrUpdateSkillBar then
+        local parent = _G.ProfessionsFrame or _G.TradeSkillFrame or _G.CraftFrame
+        if parent and parent:IsShown() then
+            NS.UI.CreateOrUpdateSkillBar(parent)
+        end
+    end
+    AdvanceScan()
 end
 
 function A.ScanReagents(force)
@@ -406,7 +546,8 @@ function A.ScanReagents(force)
             local okReady, ready = pcall(_G.C_AuctionHouse.IsThrottledMessageSystemReady)
             if okReady and ready == false then
                 if _G.C_Timer and _G.C_Timer.NewTimer then
-                    scanRetryTimer = _G.C_Timer.NewTimer(0.5, StepScan)
+                    if scanRetryTimer then scanRetryTimer:Cancel() end
+                    scanRetryTimer = _G.C_Timer.NewTimer(0.9, StepScan)
                 end
                 return
             end
@@ -434,10 +575,14 @@ function A.ScanReagents(force)
         -- Safety timeout in case a reagent has 0 auctions or doesn't fire browse update
         if _G.C_Timer and _G.C_Timer.NewTimer then
             if scanTimeoutTimer then scanTimeoutTimer:Cancel() end
-            scanTimeoutTimer = _G.C_Timer.NewTimer(2.0, StepScan)
+            scanTimeoutTimer = _G.C_Timer.NewTimer(2.5, StepScan)
         end
 
-        if _G.C_AuctionHouse and _G.C_AuctionHouse.SendBrowseQuery then
+        if _G.C_AuctionHouse and _G.C_AuctionHouse.SendSearchQuery and entry.id then
+            local itemKey = (_G.C_AuctionHouse.MakeItemKey and _G.C_AuctionHouse.MakeItemKey(entry.id))
+                or { itemID = entry.id, itemLevel = 0, itemSuffix = 0, battlePetSpeciesID = 0 }
+            pcall(_G.C_AuctionHouse.SendSearchQuery, itemKey, {}, false)
+        elseif _G.C_AuctionHouse and _G.C_AuctionHouse.SendBrowseQuery then
             pcall(_G.C_AuctionHouse.SendBrowseQuery, {
                 searchString = entry.name,
                 minLevel = 0,
@@ -454,6 +599,27 @@ function A.ScanReagents(force)
     StepScan()
 end
 
+-- ---------------------------------------------------------------------------
+-- Full Background AH Snapshot Scan (Auctionator-style via ReplicateItems)
+-- ---------------------------------------------------------------------------
+function A.OnReplicateUpdate()
+    -- Disabled synchronous full-AH replicate loop to prevent client frame freezes.
+    bgScanPending = false
+end
+
+function A.RunBackgroundScan(force)
+    if not IsAHOpen() then
+        if force then
+            DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99MyCrafting:|r Open the Auction House first to scan AH prices.")
+        end
+        return false
+    end
+
+    -- Use the non-blocking, paced SendSearchQuery reagent scanner (zero frame freeze)
+    A.ScanReagents(force)
+    return true
+end
+
 function A.InjectScanButton()
     local ahFrame = _G.AuctionHouseFrame or _G.AuctionFrame
     if not ahFrame or scanButton then return end
@@ -468,7 +634,7 @@ function A.InjectScanButton()
     btn:SetFrameLevel(ahFrame:GetFrameLevel() + 10)
     btn:SetText("Scan AH Mats")
     btn:SetScript("OnClick", function()
-        A.ScanReagents(true)
+        A.RunBackgroundScan(true)
     end)
     btn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
@@ -479,4 +645,24 @@ function A.InjectScanButton()
     end)
     btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     scanButton = btn
+
+    if not _G.MyCraftingAHProfitBtn then
+        local profitBtn = CreateFrame("Button", "MyCraftingAHProfitBtn", ahFrame, "UIPanelButtonTemplate")
+        profitBtn:SetSize(106, 22)
+        profitBtn:SetPoint("RIGHT", btn, "LEFT", -4, 0)
+        profitBtn:SetFrameLevel(ahFrame:GetFrameLevel() + 10)
+        profitBtn:SetText("Vendor Profits")
+        profitBtn:SetScript("OnClick", function()
+            if NS.UI and NS.UI.OpenAtAH then
+                NS.UI.OpenAtAH(ahFrame, "profit")
+            end
+        end)
+        profitBtn:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            GameTooltip:SetText("MyCrafting Vendor Shuffle Finder")
+            GameTooltip:AddLine("Shows crafts you can make and sell to a vendor for profit, plus quick AH mat search.", 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end)
+        profitBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    end
 end

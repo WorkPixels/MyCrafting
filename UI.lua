@@ -122,18 +122,26 @@ function UI.UpdateReagentSlotPrices(parent, recipe)
     if not sf or not sf.reagentSlotPool or not sf.reagentSlotPool.EnumerateActive then return end
 
     for slot in sf.reagentSlotPool:EnumerateActive() do
+        local label = FindSlotLabel(slot)
         if not slot.MyCraftingPriceText then
             local fs = slot:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            local label = FindSlotLabel(slot)
-            if label then
-                fs:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -1)
-            elseif slot.Button then
-                fs:SetPoint("BOTTOMLEFT", slot.Button, "BOTTOMRIGHT", 6, 2)
-            else
-                fs:SetPoint("BOTTOMLEFT", slot, "BOTTOMLEFT", 42, 2)
+            local font, size, flags = fs:GetFont()
+            if font and size and size > 10 then
+                fs:SetFont(font, 10, flags)
             end
             fs:SetJustifyH("LEFT")
             slot.MyCraftingPriceText = fs
+        end
+
+        slot.MyCraftingPriceText:ClearAllPoints()
+        local numLines = (label and label.GetNumLines and label:GetNumLines()) or 1
+        local yOff = (numLines > 1) and -3 or 2
+        if slot.Button then
+            slot.MyCraftingPriceText:SetPoint("BOTTOMLEFT", slot.Button, "BOTTOMRIGHT", 8, yOff)
+        elseif label then
+            slot.MyCraftingPriceText:SetPoint("BOTTOMLEFT", label, "BOTTOMLEFT", 0, yOff)
+        else
+            slot.MyCraftingPriceText:SetPoint("BOTTOMLEFT", slot, "BOTTOMLEFT", 42, yOff)
         end
 
         if not show then
@@ -174,7 +182,7 @@ function UI.CreateOrUpdateProfitDisplay(parent, recipe)
     local schematicFrame = cp and (cp.SchematicForm or cp.Schematic)
     if not profitBox then
         profitBox = CreateFrame("Frame", "MyCraftingProfitBox", schematicFrame or parent)
-        profitBox:SetSize(280, 28)
+        profitBox:SetSize(280, 40)
         profitBox:EnableMouse(true)
 
         local costLine = profitBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -186,6 +194,11 @@ function UI.CreateOrUpdateProfitDisplay(parent, recipe)
         profitLine:SetPoint("TOPLEFT", costLine, "BOTTOMLEFT", 0, -2)
         profitLine:SetJustifyH("LEFT")
         profitBox.profitLine = profitLine
+
+        local ahLine = profitBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        ahLine:SetPoint("TOPLEFT", profitLine, "BOTTOMLEFT", 0, -2)
+        ahLine:SetJustifyH("LEFT")
+        profitBox.ahLine = ahLine
 
         profitBox:SetScript("OnEnter", function(self)
             local data = self.profitData
@@ -227,9 +240,9 @@ function UI.CreateOrUpdateProfitDisplay(parent, recipe)
 
     profitBox:ClearAllPoints()
     if schematicFrame then
-        profitBox:SetPoint("BOTTOMLEFT", schematicFrame, "BOTTOMLEFT", 16, 62)
+        profitBox:SetPoint("BOTTOMLEFT", schematicFrame, "BOTTOMLEFT", 16, 66)
     else
-        profitBox:SetPoint("BOTTOMLEFT", parent, "BOTTOMLEFT", 360, 62)
+        profitBox:SetPoint("BOTTOMLEFT", parent, "BOTTOMLEFT", 360, 66)
     end
 
     local data = A.CalculateRecipeProfit(recipe)
@@ -258,6 +271,18 @@ function UI.CreateOrUpdateProfitDisplay(parent, recipe)
         ))
     else
         profitBox.profitLine:SetText("|cffffd100Vendor:|r |cff808080No sell value|r")
+    end
+
+    if data.ahValue and data.ahProfit then
+        local ahSign = data.ahProfit >= 0 and "|cff00ff00+" or "|cffff5050-"
+        profitBox.ahLine:SetText(string.format(
+            "|cff66ccffAH:|r %s  (%s%s|r)",
+            C.FormatMoney(data.ahValue),
+            ahSign,
+            C.FormatMoney(math.abs(data.ahProfit))
+        ))
+    else
+        profitBox.ahLine:SetText("|cff66ccffAH:|r |cff808080Not scanned|r")
     end
 
     profitBox:Show()
@@ -533,11 +558,11 @@ function UI.GetSidePanel(parent)
     end)
     sidePanel.configBtn = configBtn
 
-    -- Tabs: [Queue (N)] / [Shopping]
+    -- Tabs: [Queue (N)] / [Shopping] / [Profit]
     local tabQueue = CreateFrame("Button", nil, sidePanel, "UIPanelButtonTemplate")
-    tabQueue:SetSize(126, 22)
+    tabQueue:SetSize(86, 22)
     tabQueue:SetPoint("TOPLEFT", dragBar, "BOTTOMLEFT", 4, -6)
-    tabQueue:SetText("Craft Queue")
+    tabQueue:SetText("Queue (0)")
     tabQueue:SetScript("OnClick", function()
         activeTab = "queue"
         UI.Refresh()
@@ -545,14 +570,43 @@ function UI.GetSidePanel(parent)
     sidePanel.tabQueue = tabQueue
 
     local tabShopping = CreateFrame("Button", nil, sidePanel, "UIPanelButtonTemplate")
-    tabShopping:SetSize(126, 22)
-    tabShopping:SetPoint("LEFT", tabQueue, "RIGHT", 4, 0)
-    tabShopping:SetText("Shopping List")
+    tabShopping:SetSize(86, 22)
+    tabShopping:SetPoint("LEFT", tabQueue, "RIGHT", 3, 0)
+    tabShopping:SetText("Shopping")
     tabShopping:SetScript("OnClick", function()
         activeTab = "shopping"
         UI.Refresh()
     end)
     sidePanel.tabShopping = tabShopping
+
+    local function AnnounceProfitScan()
+        local profParent = _G.ProfessionsFrame or _G.TradeSkillFrame or _G.CraftFrame
+        local filterProf = (profParent and profParent:IsShown()) and C.GetProfessionInfo() or nil
+        local scopeLabel = filterProf or "your cached"
+        DEFAULT_CHAT_FRAME:AddMessage(string.format("|cff33ff99MyCrafting:|r Scanning %s recipes for profitable vendor crafts...", scopeLabel))
+        if NS.AuctionDB and NS.AuctionDB.GetProfitableVendorCrafts then
+            local results = NS.AuctionDB.GetProfitableVendorCrafts(filterProf)
+            if #results > 0 then
+                DEFAULT_CHAT_FRAME:AddMessage(string.format("|cff33ff99MyCrafting:|r Found %d profitable vendor craft(s).", #results))
+            elseif NS.AuctionDB.GetPriceCount and NS.AuctionDB.GetPriceCount() == 0 then
+                DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99MyCrafting:|r Found 0 profitable crafts (no AH prices cached yet — visit the AH or click Scan AH Mats).")
+            else
+                DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99MyCrafting:|r Found 0 profitable vendor crafts right now.")
+            end
+        end
+    end
+    UI.AnnounceProfitScan = AnnounceProfitScan
+
+    local tabProfit = CreateFrame("Button", nil, sidePanel, "UIPanelButtonTemplate")
+    tabProfit:SetSize(80, 22)
+    tabProfit:SetPoint("LEFT", tabShopping, "RIGHT", 3, 0)
+    tabProfit:SetText("Profit")
+    tabProfit:SetScript("OnClick", function()
+        activeTab = "profit"
+        UI.Refresh()
+        AnnounceProfitScan()
+    end)
+    sidePanel.tabProfit = tabProfit
 
     -- Scroll Area
     local scrollFrame = CreateFrame("ScrollFrame", "MyCraftingSideScroll", sidePanel, "FauxScrollFrameTemplate")
@@ -586,13 +640,17 @@ function UI.GetSidePanel(parent)
         text:SetWordWrap(false)
         row.text = text
 
-        -- Plus button (for queue)
+        -- Plus button (for queue or profit tab)
         local btnPlus = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
         btnPlus:SetSize(16, 16)
         btnPlus:SetPoint("RIGHT", row, "RIGHT", -34, 0)
         btnPlus:SetText("+")
         btnPlus:SetScript("OnClick", function()
-            if row.queueIndex then
+            if row.profitRecipe then
+                local delta = _G.IsShiftKeyDown() and 5 or 1
+                Q.Add(row.profitRecipe, delta)
+                UI.Refresh()
+            elseif row.queueIndex then
                 local list = Q.GetList()
                 local item = list[row.queueIndex]
                 if item then
@@ -895,6 +953,62 @@ function UI.HookTooltips()
             end
         end)
     end
+
+    -- Add cached AH / Vendor prices to bag & item tooltips
+    local function AppendItemPriceLines(tooltip, explicitItemID)
+        if not tooltip or tooltip.MyCraftingItemTooltipAdded then return end
+        if _G.MyCraftingDB and _G.MyCraftingDB.options and _G.MyCraftingDB.options.showReagentTooltips == false then
+            return
+        end
+
+        local itemID = explicitItemID
+        local itemName = nil
+        if not itemID and tooltip.GetItem then
+            local ok, name, link = pcall(tooltip.GetItem, tooltip)
+            if ok and link and not (_G.issecretvalue and _G.issecretvalue(link)) then
+                itemID = C.GetItemIDFromLink(link)
+                itemName = name
+            end
+        end
+        if not itemID or (_G.issecretvalue and _G.issecretvalue(itemID)) then return end
+        if not itemName then
+            itemName = C.GetItemInfo(itemID)
+        end
+
+        local ahPrice, ahSource = NS.AuctionDB and NS.AuctionDB.GetPrice and NS.AuctionDB.GetPrice(itemID)
+        local isVendor, vCost = V.IsVendorReagent(itemID, itemName)
+
+        if (ahPrice and ahPrice > 0) or (isVendor and vCost and vCost > 0) then
+            tooltip.MyCraftingItemTooltipAdded = true
+            if ahPrice and ahPrice > 0 then
+                tooltip:AddLine(string.format("|cff66ccffMyCrafting %s:|r %s each", ahSource or "AH", C.FormatMoney(ahPrice)), 0.4, 0.8, 1)
+            end
+            if isVendor and vCost and vCost > 0 then
+                tooltip:AddLine(string.format("|cffffd100MyCrafting Vendor:|r %s each", C.FormatMoney(vCost)), 1, 0.8, 0)
+            end
+        end
+    end
+
+    if _G.GameTooltip and _G.GameTooltip.HookScript then
+        _G.GameTooltip:HookScript("OnTooltipCleared", function(tooltip)
+            tooltip.MyCraftingItemTooltipAdded = nil
+        end)
+        _G.GameTooltip:HookScript("OnHide", function(tooltip)
+            tooltip.MyCraftingItemTooltipAdded = nil
+        end)
+    end
+
+    if _G.TooltipDataProcessor and _G.TooltipDataProcessor.AddTooltipPostCall and _G.Enum and _G.Enum.TooltipDataType and _G.Enum.TooltipDataType.Item then
+        _G.TooltipDataProcessor.AddTooltipPostCall(_G.Enum.TooltipDataType.Item, function(tooltip, data)
+            if tooltip == _G.GameTooltip or tooltip == _G.ItemRefTooltip then
+                AppendItemPriceLines(tooltip, data and data.id)
+            end
+        end)
+    elseif _G.GameTooltip and _G.GameTooltip.HookScript then
+        pcall(_G.GameTooltip.HookScript, _G.GameTooltip, "OnTooltipSetItem", function(tooltip)
+            AppendItemPriceLines(tooltip)
+        end)
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -909,6 +1023,7 @@ function UI.Refresh()
     if activeTab == "queue" then
         sidePanel.tabQueue:LockHighlight()
         sidePanel.tabShopping:UnlockHighlight()
+        if sidePanel.tabProfit then sidePanel.tabProfit:UnlockHighlight() end
         sidePanel.queueControls:Show()
         sidePanel.shopControls:Hide()
 
@@ -923,12 +1038,14 @@ function UI.Refresh()
             if rowIndex <= numItems then
                 local item = qList[rowIndex]
                 row.queueIndex = rowIndex
+                row.profitRecipe = nil
                 row.icon:SetTexture(item.icon)
                 row.text:SetText(string.format("%dx %s", item.count, item.name))
                 row.btnPlus:Show()
                 row.btnMinus:Show()
                 row.btnRemove:Show()
 
+                row.iconBtn:SetScript("OnClick", nil)
                 row.iconBtn:SetScript("OnEnter", function(self)
                     if item.itemLink then
                         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -941,17 +1058,21 @@ function UI.Refresh()
                 row:Show()
             else
                 row.queueIndex = nil
+                row.profitRecipe = nil
                 row:Hide()
             end
         end
-    else
+    elseif activeTab == "profit" then
         sidePanel.tabQueue:UnlockHighlight()
-        sidePanel.tabShopping:LockHighlight()
+        sidePanel.tabShopping:UnlockHighlight()
+        if sidePanel.tabProfit then sidePanel.tabProfit:LockHighlight() end
         sidePanel.queueControls:Hide()
-        sidePanel.shopControls:Show()
+        sidePanel.shopControls:Hide()
 
-        local sList = Q.GetShoppingList()
-        local numItems = #sList
+        local profParent = _G.ProfessionsFrame or _G.TradeSkillFrame or _G.CraftFrame
+        local filterProf = (profParent and profParent:IsShown()) and C.GetProfessionInfo() or nil
+        local pList = (NS.AuctionDB and NS.AuctionDB.GetProfitableVendorCrafts and NS.AuctionDB.GetProfitableVendorCrafts(filterProf)) or {}
+        local numItems = #pList
         FauxScrollFrame_Update(sidePanel.scrollFrame, numItems, NUM_ROWS, ROW_HEIGHT)
         local offset = FauxScrollFrame_GetOffset(sidePanel.scrollFrame)
 
@@ -959,8 +1080,64 @@ function UI.Refresh()
             local rowIndex = offset + i
             local row = sidePanel.rows[i]
             if rowIndex <= numItems then
+                local entry = pList[rowIndex]
+                local rec = entry.recipe
+                local prof = entry.profit
+                row.queueIndex = nil
+                row.profitRecipe = rec
+                row.icon:SetTexture(rec.icon or 134400)
+                row.text:SetText(string.format("|cff00ff00+%s|r %s", C.FormatMoney(prof.vendorProfit), rec.name or "?"))
+                row.btnPlus:Show()
+                row.btnMinus:Hide()
+                row.btnRemove:Hide()
+
+                row.iconBtn:SetScript("OnClick", nil)
+                row.iconBtn:SetScript("OnEnter", function(self)
+                    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                    GameTooltip:SetText((rec.name or "Recipe") .. " — Vendor Shuffle", 1, 1, 1)
+                    for _, mat in ipairs(prof.breakdown or {}) do
+                        GameTooltip:AddDoubleLine(
+                            string.format("%dx %s", mat.need, mat.name),
+                            string.format("%s |cff888888(%s)|r", C.FormatMoney(mat.lineCost or 0), mat.source or "?"),
+                            0.9, 0.9, 0.9, 1, 1, 1
+                        )
+                    end
+                    GameTooltip:AddLine(" ")
+                    GameTooltip:AddDoubleLine("Craft Cost:", C.FormatMoney(prof.totalCost), 1, 0.82, 0, 1, 1, 1)
+                    GameTooltip:AddDoubleLine("Vendor Sell:", C.FormatMoney(prof.vendorValue or 0), 0.8, 0.8, 0.8, 1, 1, 1)
+                    GameTooltip:AddDoubleLine("Net Profit:", "|cff00ff00+" .. C.FormatMoney(prof.vendorProfit) .. "|r", 1, 0.82, 0, 1, 1, 1)
+                    GameTooltip:AddLine("Click [+] to queue (Shift for 5x)", 0.3, 1, 0.6)
+                    GameTooltip:Show()
+                end)
+                row.iconBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+                row:Show()
+            else
+                row.queueIndex = nil
+                row.profitRecipe = nil
+                row:Hide()
+            end
+        end
+    else
+        sidePanel.tabQueue:UnlockHighlight()
+        sidePanel.tabShopping:LockHighlight()
+        if sidePanel.tabProfit then sidePanel.tabProfit:UnlockHighlight() end
+        sidePanel.queueControls:Hide()
+        sidePanel.shopControls:Show()
+
+        local sList = Q.GetShoppingList()
+        local numItems = #sList
+        FauxScrollFrame_Update(sidePanel.scrollFrame, numItems, NUM_ROWS, ROW_HEIGHT)
+        local offset = FauxScrollFrame_GetOffset(sidePanel.scrollFrame)
+        local ahOpen = (_G.AuctionHouseFrame and _G.AuctionHouseFrame:IsShown()) or (_G.AuctionFrame and _G.AuctionFrame:IsShown())
+
+        for i = 1, NUM_ROWS do
+            local rowIndex = offset + i
+            local row = sidePanel.rows[i]
+            if rowIndex <= numItems then
                 local sItem = sList[rowIndex]
                 row.queueIndex = nil
+                row.profitRecipe = nil
                 row.icon:SetTexture(sItem.icon)
                 local note = sItem.isVendor and " |cffffd100(V)|r" or ""
 
@@ -974,6 +1151,11 @@ function UI.Refresh()
                 row.btnMinus:Hide()
                 row.btnRemove:Hide()
 
+                row.iconBtn:SetScript("OnClick", function()
+                    if ahOpen and not sItem.isVendor and NS.AuctionDB and NS.AuctionDB.SearchAHForItem then
+                        NS.AuctionDB.SearchAHForItem(sItem.id, sItem.name)
+                    end
+                end)
                 row.iconBtn:SetScript("OnEnter", function(self)
                     if sItem.link then
                         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -989,6 +1171,9 @@ function UI.Refresh()
                                 GameTooltip:AddLine(string.format("|cff66ccff%s:|r %s each", ahSource or "AH", C.FormatMoney(ahPrice)), 0.4, 0.8, 1)
                             end
                         end
+                        if ahOpen and not sItem.isVendor and sItem.need > 0 then
+                            GameTooltip:AddLine(string.format("|cff33ff99Click icon to search AH (need %d)|r", sItem.need), 0.2, 1, 0.5)
+                        end
                         GameTooltip:Show()
                     end
                 end)
@@ -996,6 +1181,8 @@ function UI.Refresh()
 
                 row:Show()
             else
+                row.queueIndex = nil
+                row.profitRecipe = nil
                 row:Hide()
             end
         end
@@ -1087,6 +1274,20 @@ function UI.AttachToDefaultFrame(parent)
         if parent.MyCraftingSideTab then
             parent.MyCraftingSideTab:SetText("Queue >>")
         end
+    end
+end
+
+function UI.OpenAtAH(frame, tabName)
+    if not frame then return end
+    local panel = UI.GetSidePanel(frame)
+    if tabName then
+        activeTab = tabName
+    end
+    UI.PositionSidePanel(frame)
+    panel:Show()
+    UI.Refresh()
+    if tabName == "profit" and UI.AnnounceProfitScan then
+        UI.AnnounceProfitScan()
     end
 end
 

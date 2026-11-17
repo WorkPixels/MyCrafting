@@ -14,6 +14,7 @@ local DEFAULT_DB = {
     bankInventory = {},
     ahPrices = {},
     knownReagents = {},
+    knownRecipes = {},
     options = {
         sidePanelOpen = true,
         autoBuyVendor = false,
@@ -109,6 +110,8 @@ local EVENTS_TO_REGISTER = {
     "AUCTION_HOUSE_CLOSED",
     "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED",
     "AUCTION_HOUSE_BROWSE_RESULTS_ADDED",
+    "REPLICATE_ITEM_LIST_UPDATE",
+    "AUCTION_HOUSE_THROTTLED_SYSTEM_READY",
     "COMMODITY_SEARCH_RESULTS_UPDATED",
     "ITEM_SEARCH_RESULTS_UPDATED",
     "AUCTION_ITEM_LIST_UPDATE",
@@ -170,6 +173,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
             Q.Init(_G.MyCraftingDB.queue)
             CheckAndHookAllFrames()
+            if UI and UI.HookTooltips then
+                UI.HookTooltips()
+            end
             if NS.GatheringDB and NS.GatheringDB.HookTooltip then
                 NS.GatheringDB.HookTooltip()
             end
@@ -242,7 +248,11 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 end)
                 if _G.MyCraftingDB and _G.MyCraftingDB.options and _G.MyCraftingDB.options.autoScanAH ~= false then
                     _G.C_Timer.After(0.5, function()
-                        A.ScanReagents(false)
+                        if A.RunBackgroundScan then
+                            A.RunBackgroundScan(false)
+                        else
+                            A.ScanReagents(false)
+                        end
                     end)
                 end
             end
@@ -250,17 +260,37 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "AUCTION_HOUSE_CLOSED" then
         if A then A.StopScan() end
+        if UI and UI.HideSidePanel and not Q.IsRunning() then
+            local p = _G.ProfessionsFrame or _G.TradeSkillFrame or _G.CraftFrame
+            if not (p and p:IsShown()) then
+                UI.HideSidePanel()
+            end
+        end
 
     elseif event == "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED" or event == "AUCTION_HOUSE_BROWSE_RESULTS_ADDED" then
         if A then A.OnBrowseUpdated() end
 
+    elseif event == "REPLICATE_ITEM_LIST_UPDATE" then
+        if A and A.OnReplicateUpdate then A.OnReplicateUpdate() end
+
+    elseif event == "AUCTION_HOUSE_THROTTLED_SYSTEM_READY" then
+        if A and A.OnThrottledReady then A.OnThrottledReady() end
+
     elseif event == "COMMODITY_SEARCH_RESULTS_UPDATED" then
         local itemID = ...
-        if A then A.CaptureCommodityResults(itemID) end
+        if A and A.OnCommodityUpdated then
+            A.OnCommodityUpdated(itemID)
+        elseif A then
+            A.CaptureCommodityResults(itemID)
+        end
 
     elseif event == "ITEM_SEARCH_RESULTS_UPDATED" then
         local itemKey = ...
-        if A then A.CaptureItemResults(itemKey) end
+        if A and A.OnItemSearchUpdated then
+            A.OnItemSearchUpdated(itemKey)
+        elseif A then
+            A.CaptureItemResults(itemKey)
+        end
 
     elseif event == "AUCTION_ITEM_LIST_UPDATE" then
         if A then A.CaptureLegacyList() end
@@ -282,6 +312,7 @@ local function PrintHelp()
     DEFAULT_CHAT_FRAME:AddMessage("  |cffffd100/mc clear|r - Clear crafting queue")
     DEFAULT_CHAT_FRAME:AddMessage("  |cffffd100/mc autobuy [on|off]|r - Toggle auto-buy vendor reagents at merchants")
     DEFAULT_CHAT_FRAME:AddMessage("  |cffffd100/mc ahscan|r - Scan AH prices for known crafting reagents")
+    DEFAULT_CHAT_FRAME:AddMessage("  |cffffd100/mc profit|r - Show profitable vendor-shuffle crafts")
     DEFAULT_CHAT_FRAME:AddMessage("  |cffffd100/mc reset|r - Reset window and side panel positions")
 end
 
@@ -305,8 +336,22 @@ _G.SlashCmdList["MYCRAFTING"] = function(msg)
     elseif cmd == "shop" then
         Q.ShareToChat("SELF")
     elseif cmd == "ahscan" or cmd == "scan" then
-        if A and A.ScanReagents then
+        if A and A.RunBackgroundScan then
+            A.RunBackgroundScan(true)
+        elseif A and A.ScanReagents then
             A.ScanReagents(true)
+        end
+    elseif cmd == "profit" or cmd == "profits" then
+        local ah = _G.AuctionHouseFrame or _G.AuctionFrame
+        if ah and ah:IsShown() and UI.OpenAtAH then
+            UI.OpenAtAH(ah, "profit")
+        else
+            local p = _G.ProfessionsFrame or _G.TradeSkillFrame or _G.CraftFrame
+            if p and p:IsShown() and UI.OpenAtAH then
+                UI.OpenAtAH(p, "profit")
+            else
+                DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99MyCrafting:|r Open a profession window or the Auction House first.")
+            end
         end
     elseif cmd == "clear" then
         Q.Clear()
